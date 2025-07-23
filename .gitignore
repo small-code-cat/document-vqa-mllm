@@ -1,0 +1,8 @@
+__pycache__/
+*.py[cod]
+
+# MacOS / Linux
+.DS_Store
+
+# Sensitive configs
+config.py
