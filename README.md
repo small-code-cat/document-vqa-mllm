@@ -24,6 +24,8 @@ pip install -r requirements.txt
 请参考 [VisRAG](https://github.com/OpenBMB/VisRAG) 项目安装说明 进行安装，并确保依赖（如 MiniCPM）安装完整。
 
 ## ⚙️ 配置说明（config.py）
+请根据模板复制 `config.template.py` 为 `config.py` 并填写你自己的路径和密钥
+
 本项目使用 Box 封装了配置信息，位于 config.py 中，配置格式如下：
 ```bash
 from box import Box
