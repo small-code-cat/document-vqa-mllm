@@ -6,3 +6,6 @@ __pycache__/
 
 # Sensitive configs
 config.py
+
+images/
+indexes/
