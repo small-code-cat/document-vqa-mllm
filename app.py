@@ -23,21 +23,17 @@ def document_parser(uploaded_file, granularity, target_dir_root='./images'):
         pdf_to_images_mupdf(uploaded_file, target_dir)
     return target_dir
 
-def build_index(image_dir, retriever, granularity, index_dir='./indexes'):
+def build_index(image_dir, retriever_name, granularity, index_dir='./indexes'):
     output_dir = os.path.join(index_dir)
     os.makedirs(output_dir, exist_ok=True)
-    tokenizer = get_tokenizer(retriever)
-    model = get_model(retriever)
-    if retriever == 'VisRAG-Retriever(MiniCPM-V2.0)':
-        index_path = encode_corpus_by_visrag(image_dir, output_dir, tokenizer, model, granularity)
+    retriever = get_retriever(retriever_name)
+    index_path = encode_corpus(image_dir, output_dir, retriever, granularity)
     return index_path
 
-def retrieve(query: str, retriever: str, index_path):
-    tokenizer = get_tokenizer(retriever)
-    model = get_model(retriever)
-    if retriever == 'VisRAG-Retriever(MiniCPM-V2.0)':
-        query_embedding = encode_query(query, tokenizer, model)
-        result = get_corpus(query_embedding, index_path)
+def retrieve(query: str, retriever_name: str, index_path):
+    retriever = get_retriever(retriever_name)
+    query_embedding = encode_query(query, retriever)
+    result = get_corpus(query_embedding, index_path)
     return result
 
 def generate_answer(topk_image_paths: List[str], query: str, generator_name: str) -> str:
@@ -102,22 +98,25 @@ if uploaded_file:
         st.info(f"📁 使用已缓存索引（Retriever: {retriever}）")
 
     query = st.text_input("请输入你的问题：")
+    generate_flag = st.checkbox("是否生成回答", value=True)
 
     if query:
         with st.spinner("检索中..."):
-            retrieved_img_list = retrieve(query, retriever, index_path)
+            topk_image_paths = retrieve(query, retriever, index_path)
 
         st.subheader("🔍 检索到的内容")
-        topk_image_paths = [os.path.join(image_path, i) for i in retrieved_img_list]
         cols = st.columns(len(topk_image_paths))  # 每张图一个列
         for col, img_path in zip(cols, topk_image_paths):
             image = Image.open(img_path)
             col.image(image, use_container_width=True)
 
-        with st.spinner("生成回答中..."):
-            response = generate_answer(topk_image_paths, query, generator)
+        if generate_flag:
+            with st.spinner("生成回答中..."):
+                response = generate_answer(topk_image_paths, query, generator)
 
-        st.subheader("🤖 回答")
-        st.write(response)
+            st.subheader("🤖 回答")
+            st.write(response)
+        else:
+            st.info("🧠 当前未启用回答生成功能，仅展示检索结果。")
 else:
     st.info("请在左侧上传文档以开始")

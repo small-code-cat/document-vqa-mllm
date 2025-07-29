@@ -7,6 +7,7 @@ from box import Box
 from doclayout_yolo import YOLOv10
 import base64
 from PIL import Image
+from pprint import pprint
 from tqdm import tqdm
 import hashlib
 from collections import defaultdict
@@ -23,6 +24,13 @@ import pickle
 import torch
 import io
 import numpy as np
+
+def get_retriever(model):
+    if model == "VisRAG-Retriever(MiniCPM-V2.0)":
+        from vision_wrapper import VisRAGRetriever
+        return VisRAGRetriever()
+    else:
+        raise ValueError("the model name is not correct!")
 
 def get_stable_pdf_id(file):
     file.seek(0)
@@ -131,54 +139,29 @@ def to_device(data, device):
     else:
         return data
 
-def encode_corpus_by_visrag(image_dir, output_dir, tokenizer, model, granularity):
-    encoded = []
-    lookup_indices = []
-    data_args = Box({
-        'p_max_len': 2048,
+def get_image_byte(image_path):
+    # 打开图片
+    img = Image.open(image_path)
 
-    })
-    model_additional_args = {  # for VisRAG_Ret only
-        "tokenizer": tokenizer,
-        "max_inp_length": data_args.p_max_len
-    }
-    batches = load_images_in_batches(image_dir)
-    for batch in tqdm(batches):
-        batch_ids = batch['id']
-        lookup_indices.extend(batch_ids)
-        with nullcontext():
-            with torch.no_grad():
-                for k, v in batch.items():
-                    batch[k] = to_device(v, RAG_CONFIG.device)  # a BatchEncoding object, can contain strings.
+    # 转为字节流
+    buffer = io.BytesIO()
+    img.save(buffer, format="png")  # 可改为 PNG、WEBP 等
+    img_bytes = buffer.getvalue()
+    return img_bytes
 
-                model_output = model(passage=batch, **model_additional_args)
-                encoded_ = model_output.p_reps.cpu().detach().numpy()
-                encoded.append(encoded_)
-    encoded = np.concatenate(encoded)
-    index_path = os.path.join(output_dir, "{}-{}-embeddings".format(Path(image_dir).parent.name, granularity))
+def encode_corpus(image_dir, output_dir, retriever, granularity):
+    # 遍历目录中的所有文件
+    image_paths = [os.path.join(image_dir, fname) for fname in os.listdir(image_dir)]
+    corpus_byte_list = [get_image_byte(i) for i in image_paths]
+    corpus_list = retriever.embed_quotes(corpus_byte_list)
+    index_path = os.path.join(output_dir, "{}-{}-embeddings.pkl".format(Path(image_dir).parent.name, granularity))
     with open(index_path, "wb") as f:
-        pickle.dump((encoded, lookup_indices), f, protocol=4)
+        pickle.dump((corpus_list, image_paths), f)
     return index_path
 
-def encode_query(query, tokenizer, model):
-    encoded = []
-    data_args = Box({
-        'p_max_len': 2048,
-
-    })
-    model_additional_args = {  # for VisRAG_Ret only
-        "tokenizer": tokenizer,
-        "max_inp_length": data_args.p_max_len
-    }
-    batch = defaultdict(list)
-    batch['id'].append('')
-    batch['text'].append(RAG_CONFIG.templates.visrag_query_template.format(query=query))
-    batch['image'].append(None)
-    model_output = model(query=batch, **model_additional_args)
-    encoded_ = model_output.q_reps.cpu().detach().numpy()
-    encoded.append(encoded_)
-    encoded = np.concatenate(encoded)
-    return encoded
+def encode_query(query, retriever):
+    encoded_query = retriever.embed_queries(query)
+    return encoded_query[0]
 
 
 def _retrieve_one_shard(
@@ -203,15 +186,30 @@ def _retrieve_one_shard(
     gc.collect()
     return topk_scores.clone(), topk_indices.clone(), corpus_lookup_indices
 
+def load_pickle(file_in):
+    # Load pickled files
+    with open(file_in, "rb") as fq:
+        return pickle.load(fq)
+
+def batch_dot_product(query_vec, passage_vecs):
+    return passage_vecs @ query_vec
+
+def top_k_indices(scores, k):
+    # raise ValueError("k cannot be greater than the number of scores")
+    # Create a list of indices and scores, sort by scores in descending order
+    indexed_scores = sorted(enumerate(scores), key=lambda x: x[1], reverse=True)
+    if k <= len(scores):
+        # Extract the indices of the top k scores
+        top_indices = [index for index, score in indexed_scores[:k]]
+        return top_indices
+    else:
+        return [index for index, score in indexed_scores]
+
 def get_corpus(query_embedding, index_path):
-    query_embedding = torch.tensor(query_embedding, device=RAG_CONFIG.device)
-    topk_scores, topk_indices, corpus_lookup_indices = _retrieve_one_shard(
-        corpus_shard_path=index_path,
-        encoded_queries_tensor=query_embedding,
-        topk=RAG_CONFIG.topk,
-        device=RAG_CONFIG.device
-    )
-    result = [corpus_lookup_indices[idx.item()] for idx, _ in zip(topk_indices[0], topk_scores[0])]
+    encoded_page, page_indices = load_pickle(index_path)
+    scores_page = batch_dot_product(query_embedding, encoded_page)
+    scores = top_k_indices(scores_page, RAG_CONFIG.page_topk if 'page' in index_path else RAG_CONFIG.layout_topk)
+    result = [page_indices[i] for i in scores]
     return result
 
 @st.cache_resource(show_spinner=False)
